@@ -19,86 +19,159 @@ warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # =====================================================================
-# STREAMLIT PAGE CONFIGURATION & FIX CSS
+# STREAMLIT PAGE CONFIGURATION & EXACT COLAB STYLING
 # =====================================================================
 st.set_page_config(
     page_title="Institutional Quant Terminal V2",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
-# Custom Responsive CSS for Mobile & Button Visibility Fix
+# Hide Streamlit default headers/footers and apply Colab Terminal styling
 st.markdown("""
 <style>
-    .stApp { background-color: #090d14; color: #e1e7ed; }
+    .stApp { background-color: #090d16 !important; color: #e1e7ed; }
+    header, footer, #MainMenu { visibility: hidden; }
     
-    .mobile-header {
-        background: #0f172a;
-        padding: 12px;
-        border-radius: 10px;
-        border: 1px solid #1e293b;
-        margin-bottom: 12px;
-    }
-    .mobile-title { font-size: 16px; font-weight: 800; color: #38bdf8; margin: 0; }
-    .mobile-sub { font-size: 10px; color: #64748b; margin: 0; }
-    
-    /* Streamlit Button Fix */
     div.stButton > button {
         background-color: #0284c7 !important;
         color: #ffffff !important;
         font-weight: bold !important;
-        border-radius: 8px !important;
+        border-radius: 6px !important;
         border: none !important;
-        padding: 10px 16px !important;
+        padding: 10px 20px !important;
+        font-size: 14px !important;
+        width: 100%;
+        margin-bottom: 15px;
     }
     div.stButton > button:hover {
         background-color: #0369a1 !important;
-        color: #ffffff !important;
     }
 
-    .stock-card {
-        background: #0d1527;
+    /* COLAB CONTAINER STYLE */
+    .terminal-container {
+        background-color: #060911;
         border: 1px solid #1e293b;
-        border-radius: 8px;
-        padding: 12px;
-        margin-bottom: 10px;
+        border-radius: 10px;
+        padding: 16px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        overflow-x: auto;
     }
-    .stock-card-header {
+    
+    /* TERMINAL HEADER */
+    .terminal-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         border-bottom: 1px solid #1e293b;
-        padding-bottom: 6px;
-        margin-bottom: 8px;
+        padding-bottom: 12px;
+        margin-bottom: 15px;
     }
-    .stock-symbol { font-size: 15px; font-weight: bold; color: #ffffff; }
+    .terminal-title {
+        font-size: 18px;
+        font-weight: 800;
+        color: #38bdf8;
+        letter-spacing: 0.5px;
+    }
+    .terminal-sub {
+        font-size: 11px;
+        color: #64748b;
+        margin-top: 2px;
+    }
     
-    .badge { padding: 3px 6px; border-radius: 4px; font-weight: 800; font-size: 10px; text-transform: uppercase; }
-    .BUY { background: #064e3b; color: #34d399; border: 1px solid #059669; }
-    .SELL { background: #4c0519; color: #fb7185; border: 1px solid #e11d48; }
-    
-    .tcs-green { background: #064e3b; color: #34d399; border: 1px solid #059669; font-weight: bold; padding: 2px 5px; border-radius: 4px; font-size: 11px; }
-    .tcs-orange { background: #451a03; color: #fb923c; border: 1px solid #d97706; font-weight: bold; padding: 2px 5px; border-radius: 4px; font-size: 11px; }
-    .tcs-red { background: #4c0519; color: #fb7185; border: 1px solid #e11d48; font-weight: bold; padding: 2px 5px; border-radius: 4px; font-size: 11px; }
-
-    .metric-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
+    /* REGIME & ADX BADGES */
+    .regime-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .badge-bullish {
+        background: #064e3b;
+        color: #34d399;
+        border: 1px solid #059669;
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-weight: 800;
         font-size: 11px;
     }
-    .metric-item {
-        background: #090d14;
-        padding: 6px;
+    .badge-neutral {
+        background: #064e3b;
+        color: #34d399;
+        border: 1px solid #059669;
+        padding: 4px 10px;
         border-radius: 4px;
-        border: 1px solid #1e293b;
+        font-weight: 800;
+        font-size: 11px;
     }
-    .metric-lbl { font-size: 9px; color: #64748b; text-transform: uppercase; }
-    .metric-val { font-size: 11px; font-weight: bold; color: #e1e7ed; font-family: monospace; }
+    .adx-val {
+        font-size: 11px;
+        color: #94a3b8;
+        font-weight: bold;
+    }
+
+    /* TABLE STYLING EXACTLY LIKE COLAB */
+    .quant-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        text-align: left;
+    }
+    .quant-table th {
+        color: #94a3b8;
+        font-weight: 700;
+        padding: 10px 8px;
+        border-bottom: 1px solid #1e293b;
+        font-size: 12px;
+        white-space: nowrap;
+    }
+    .quant-table td {
+        padding: 12px 8px;
+        border-bottom: 1px solid #0f172a;
+        color: #cbd5e1;
+        white-space: nowrap;
+        font-family: monospace;
+    }
+    .quant-table tr:hover {
+        background-color: #0f172a;
+    }
     
-    .dot-green { height: 8px; width: 8px; background-color: #22c55e; border-radius: 50%; display: inline-block; margin-right: 2px; }
-    .dot-red { height: 8px; width: 8px; background-color: #ef4444; border-radius: 50%; display: inline-block; margin-right: 2px; }
+    /* COLAB BADGES & HIGHLIGHTS */
+    .buy-tag {
+        background: #064e3b;
+        color: #34d399;
+        border: 1px solid #059669;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 800;
+        font-size: 11px;
+    }
+    .tcs-badge-green {
+        background: #064e3b;
+        color: #34d399;
+        border: 1px solid #059669;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: 800;
+        font-size: 12px;
+    }
+    .tcs-badge-orange {
+        background: #451a03;
+        color: #fb923c;
+        border: 1px solid #d97706;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: 800;
+        font-size: 12px;
+    }
+    
+    .symbol-text { color: #ffffff; font-weight: bold; font-family: sans-serif; }
+    .tvf-text { color: #f59e0b; font-weight: bold; }
+    .demand-text { color: #34d399; font-weight: bold; }
+    .supply-text { color: #fb7185; font-weight: bold; }
+    
+    .dot-green { height: 7px; width: 7px; background-color: #22c55e; border-radius: 50%; display: inline-block; margin-right: 2px; }
+    .dot-red { height: 7px; width: 7px; background-color: #ef4444; border-radius: 50%; display: inline-block; margin-right: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -397,86 +470,97 @@ def run_master_scan():
     return top_df, market
 
 # =====================================================================
-# STREAMLIT UI
+# MAIN RUNNER
 # =====================================================================
 def main():
-    st.markdown("""
-        <div class="mobile-header">
-            <p class="mobile-title">⚡ INSTITUTIONAL QUANT TERMINAL V2</p>
-            <p class="mobile-sub">RANGE: ₹300 - ₹600 | TCS SYSTEM ACTIVE</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    if st.button("🚀 EXECUTE QUANT SCAN", use_container_width=True):
-        with st.spinner("Fetching Market Data & Running Quant Engine..."):
-            try:
-                top_df, market = run_master_scan()
-                st.session_state['top_df'] = top_df
-                st.session_state['market'] = market
-            except Exception as e:
-                st.error(f"Error executing scanner: {e}")
+    if st.button("🚀 EXECUTE QUANT SCAN"):
+        with st.spinner("Fetching Market Data & Executing Engine..."):
+            top_df, market = run_master_scan()
+            st.session_state['top_df'] = top_df
+            st.session_state['market'] = market
 
     if 'top_df' in st.session_state and st.session_state['top_df'] is not None:
         top_df = st.session_state['top_df']
         market = st.session_state['market']
         
         if top_df.empty:
-            st.warning("No stocks met the filter criteria within ₹300 - ₹600 parameters.")
+            st.warning("No stocks met the filter criteria.")
             return
 
-        st.markdown(f"""
-            <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #1e293b; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
-                <div><span style="font-size:12px; font-weight:bold; color:#94a3b8;">REGIME:</span> <span class="badge BUY">{market['regime']}</span></div>
-                <div style="font-size:11px; color:#38bdf8;"><b>NIFTY ADX:</b> {market['adx']:.1f}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        # HTML TABLE BUILDER (COLAB EXACT MATCH)
+        rows_html = ""
+        for idx, r in top_df.iterrows():
+            mtf = r['MTF_EMA']
+            d1m = f'<span class="{"dot-green" if mtf["1m"] else "dot-red"}"></span>'
+            d3m = f'<span class="{"dot-green" if mtf["3m"] else "dot-red"}"></span>'
+            d5m = f'<span class="{"dot-green" if mtf["5m"] else "dot-red"}"></span>'
+            d15m = f'<span class="{"dot-green" if mtf["15m"] else "dot-red"}"></span>'
+            mtf_dots = f"{d1m}{d3m}{d5m}{d15m}"
 
-        view_mode = st.radio("Display Layout", ["📱 Mobile Cards", "📊 Desktop Table"], horizontal=True)
+            tcs_class = "tcs-badge-green" if r['TCS'] >= 75.0 else "tcs-badge-orange"
 
-        if view_mode == "📱 Mobile Cards":
-            for idx, r in top_df.iterrows():
-                mtf = r['MTF_EMA']
-                d1m = f'<span class="{"dot-green" if mtf["1m"] else "dot-red"}"></span>'
-                d3m = f'<span class="{"dot-green" if mtf["3m"] else "dot-red"}"></span>'
-                d5m = f'<span class="{"dot-green" if mtf["5m"] else "dot-red"}"></span>'
-                d15m = f'<span class="{"dot-green" if mtf["15m"] else "dot-red"}"></span>'
-                mtf_dots = f"{d1m}{d3m}{d5m}{d15m}"
+            rows_html += f"""
+            <tr>
+                <td class="symbol-text">{r['Symbol']}</td>
+                <td><span class="buy-tag">{r['Direction']}</span></td>
+                <td class="tvf-text">{r['TVF']}</td>
+                <td>{r['Score']}</td>
+                <td><span class="{tcs_class}">{r['TCS']}%</span></td>
+                <td>₹{r['CMP']}</td>
+                <td>₹{r['VWAP']}</td>
+                <td>{r['OBI']}%</td>
+                <td>{r['COBI']}%</td>
+                <td>{r['PMS']}</td>
+                <td>{r['rOVL']}x</td>
+                <td class="demand-text">+{r['Demand_Pct']}%</td>
+                <td class="supply-text">-{r['Supply_Pct']}%</td>
+                <td>{mtf_dots}</td>
+                <td>{r['RSI']}</td>
+                <td>{r['ADX']}</td>
+            </tr>
+            """
 
-                tcs_val = r['TCS']
-                tcs_class = "tcs-green" if tcs_val >= 75.0 else ("tcs-orange" if tcs_val >= 50.0 else "tcs-red")
-
-                st.markdown(f"""
-                <div class="stock-card">
-                    <div class="stock-card-header">
-                        <div>
-                            <span class="stock-symbol">{r['Symbol']}</span>
-                            <span class="badge {r['Direction']}" style="margin-left:6px">{r['Direction']}</span>
-                        </div>
-                        <div>
-                            <span class="{tcs_class}">TCS: {tcs_val}%</span>
-                        </div>
-                    </div>
-                    <div class="metric-grid">
-                        <div class="metric-item"><div class="metric-lbl">CMP</div><div class="metric-val">₹{r['CMP']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">VWAP</div><div class="metric-val">₹{r['VWAP']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">TVF</div><div class="metric-val" style="color:#f59e0b">{r['TVF']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">SCORE</div><div class="metric-val">{r['Score']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">OBI</div><div class="metric-val">{r['OBI']}%</div></div>
-                        <div class="metric-item"><div class="metric-lbl">COBI</div><div class="metric-val">{r['COBI']}%</div></div>
-                        <div class="metric-item"><div class="metric-lbl">PMS</div><div class="metric-val">{r['PMS']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">rOVL</div><div class="metric-val">{r['rOVL']}x</div></div>
-                        <div class="metric-item"><div class="metric-lbl">DEMAND</div><div class="metric-val" style="color:#34d399">+{r['Demand_Pct']}%</div></div>
-                        <div class="metric-item"><div class="metric-lbl">SUPPLY</div><div class="metric-val" style="color:#fb7185">-{r['Supply_Pct']}%</div></div>
-                        <div class="metric-item"><div class="metric-lbl">RSI</div><div class="metric-val">{r['RSI']}</div></div>
-                        <div class="metric-item"><div class="metric-lbl">MTF EMA</div><div class="metric-val">{mtf_dots}</div></div>
-                    </div>
+        html_code = f"""
+        <div class="terminal-container">
+            <div class="terminal-header">
+                <div>
+                    <div class="terminal-title">INSTITUTIONAL QUANT TERMINAL V2 (OPTIMIZED)</div>
+                    <div class="terminal-sub">RANGE: RS 300 TO RS 600 | TCS SYSTEM ACTIVE</div>
                 </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.dataframe(top_df, use_container_width=True)
-
-        csv_data = top_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Analysis CSV", data=csv_data, file_name=CONFIG["csv_name"], mime="text/csv", use_container_width=True)
+                <div class="regime-box">
+                    <span class="badge-neutral">REGIME: {market['regime']}</span>
+                    <span class="adx-val">ADX: {market['adx']:.1f}</span>
+                </div>
+            </div>
+            <table class="quant-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>TVF</th>
+                        <th>Score</th>
+                        <th>TCS %</th>
+                        <th>CMP</th>
+                        <th>VWAP</th>
+                        <th>OBI</th>
+                        <th>COBI</th>
+                        <th>PMS</th>
+                        <th>rOVL</th>
+                        <th>Demand %</th>
+                        <th>Supply %</th>
+                        <th>MTF EMA13<br><span style="font-size:9px; color:#64748b;">(1m, 3m, 5m, 15m)</span></th>
+                        <th>RSI</th>
+                        <th>ADX</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+        """
+        
+        st.markdown(html_code, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
