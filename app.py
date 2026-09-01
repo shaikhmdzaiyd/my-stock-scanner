@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # =====================================================================
-# STREAMLIT PAGE CONFIGURATION & EXACT COLAB STYLING
+# STREAMLIT PAGE CONFIGURATION & EXACT TERMINAL STYLING
 # =====================================================================
 st.set_page_config(
     page_title="Institutional Quant Terminal V2",
@@ -27,7 +27,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Styling for Terminal UI
+# Strict UI Styles matching Google Colab Output
 st.markdown("""
 <style>
     .stApp { background-color: #090d16 !important; color: #e1e7ed; }
@@ -83,15 +83,6 @@ st.markdown("""
         align-items: center;
         gap: 8px;
     }
-    .badge-bullish {
-        background: #064e3b;
-        color: #34d399;
-        border: 1px solid #059669;
-        padding: 4px 10px;
-        border-radius: 4px;
-        font-weight: 800;
-        font-size: 11px;
-    }
     .badge-neutral {
         background: #064e3b;
         color: #34d399;
@@ -141,6 +132,16 @@ st.markdown("""
         font-weight: 800;
         font-size: 11px;
     }
+    .sell-tag {
+        background: #881337;
+        color: #fda4af;
+        border: 1px solid #e11d48;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 800;
+        font-size: 11px;
+    }
+    
     .tcs-badge-green {
         background: #064e3b;
         color: #34d399;
@@ -191,9 +192,7 @@ CONFIG = {
     "swing_lookback": 20,
     "volume_expansion": 1.10,
     "minimum_candidate_score": 45,
-    "top_n": 20, 
-    "save_csv": True, 
-    "csv_name": "institutional_screener_tcs.csv"
+    "top_n": 20
 }
 
 # =====================================================================
@@ -247,7 +246,7 @@ def get_nifty500_universe():
                 df = pd.read_csv(StringIO(r.text))
                 if "Symbol" in df.columns:
                     syms = [s if str(s).endswith(".NS") else str(s) + ".NS" for s in df["Symbol"].dropna().str.strip().str.upper()]
-                    if len(syms) >= 400: return list(dict.fromkeys(syms))
+                    if len(syms) >= 400: return sorted(list(dict.fromkeys(syms)))
         except Exception: continue
     return []
 
@@ -454,14 +453,15 @@ def run_master_scan():
     
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONFIG["download_threads"]) as ex:
-        futures = {ex.submit(analyze_stock, sym, df, market["df"], market): sym for sym, df in market_data.items()}
+        futures = {ex.submit(analyze_stock, sym, market_data[sym], market["df"], market): sym for sym in sorted(market_data.keys())}
         for fut in concurrent.futures.as_completed(futures):
             res, status = fut.result()
             if res: results.append(res)
 
     top_df = pd.DataFrame(results)
     if not top_df.empty:
-        top_df = top_df.sort_values(["TCS", "Score"], ascending=[False, False]).head(CONFIG["top_n"]).reset_index(drop=True)
+        # Deterministic sorting (TCS -> Score -> Symbol alphabetical tie breaker)
+        top_df = top_df.sort_values(by=["TCS", "Score", "Symbol"], ascending=[False, False, True]).head(CONFIG["top_n"]).reset_index(drop=True)
     return top_df, market
 
 # =====================================================================
@@ -492,11 +492,12 @@ def main():
             mtf_dots = f"{d1m}{d3m}{d5m}{d15m}"
 
             tcs_class = "tcs-badge-green" if r['TCS'] >= 75.0 else "tcs-badge-orange"
+            side_class = "buy-tag" if r['Direction'] == "BUY" else "sell-tag"
 
             row = (
                 f'<tr>'
                 f'<td class="symbol-text">{r["Symbol"]}</td>'
-                f'<td><span class="buy-tag">{r["Direction"]}</span></td>'
+                f'<td><span class="{side_class}">{r["Direction"]}</span></td>'
                 f'<td class="tvf-text">{r["TVF"]}</td>'
                 f'<td>{r["Score"]}</td>'
                 f'<td><span class="{tcs_class}">{r["TCS"]}%</span></td>'
