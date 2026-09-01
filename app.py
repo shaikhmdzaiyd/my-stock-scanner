@@ -27,7 +27,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Hide Streamlit default headers/footers and apply Colab Terminal styling
+# Custom Styling for Terminal UI
 st.markdown("""
 <style>
     .stApp { background-color: #090d16 !important; color: #e1e7ed; }
@@ -48,7 +48,6 @@ st.markdown("""
         background-color: #0369a1 !important;
     }
 
-    /* COLAB CONTAINER STYLE */
     .terminal-container {
         background-color: #060911;
         border: 1px solid #1e293b;
@@ -59,7 +58,6 @@ st.markdown("""
         overflow-x: auto;
     }
     
-    /* TERMINAL HEADER */
     .terminal-header {
         display: flex;
         justify-content: space-between;
@@ -80,7 +78,6 @@ st.markdown("""
         margin-top: 2px;
     }
     
-    /* REGIME & ADX BADGES */
     .regime-box {
         display: flex;
         align-items: center;
@@ -110,7 +107,6 @@ st.markdown("""
         font-weight: bold;
     }
 
-    /* TABLE STYLING EXACTLY LIKE COLAB */
     .quant-table {
         width: 100%;
         border-collapse: collapse;
@@ -136,7 +132,6 @@ st.markdown("""
         background-color: #0f172a;
     }
     
-    /* COLAB BADGES & HIGHLIGHTS */
     .buy-tag {
         background: #064e3b;
         color: #34d399;
@@ -487,8 +482,7 @@ def main():
             st.warning("No stocks met the filter criteria.")
             return
 
-        # HTML TABLE BUILDER (COLAB EXACT MATCH)
-        rows_html = ""
+        rows_list = []
         for idx, r in top_df.iterrows():
             mtf = r['MTF_EMA']
             d1m = f'<span class="{"dot-green" if mtf["1m"] else "dot-red"}"></span>'
@@ -499,68 +493,71 @@ def main():
 
             tcs_class = "tcs-badge-green" if r['TCS'] >= 75.0 else "tcs-badge-orange"
 
-            rows_html += f"""
-            <tr>
-                <td class="symbol-text">{r['Symbol']}</td>
-                <td><span class="buy-tag">{r['Direction']}</span></td>
-                <td class="tvf-text">{r['TVF']}</td>
-                <td>{r['Score']}</td>
-                <td><span class="{tcs_class}">{r['TCS']}%</span></td>
-                <td>₹{r['CMP']}</td>
-                <td>₹{r['VWAP']}</td>
-                <td>{r['OBI']}%</td>
-                <td>{r['COBI']}%</td>
-                <td>{r['PMS']}</td>
-                <td>{r['rOVL']}x</td>
-                <td class="demand-text">+{r['Demand_Pct']}%</td>
-                <td class="supply-text">-{r['Supply_Pct']}%</td>
-                <td>{mtf_dots}</td>
-                <td>{r['RSI']}</td>
-                <td>{r['ADX']}</td>
-            </tr>
-            """
+            row = (
+                f'<tr>'
+                f'<td class="symbol-text">{r["Symbol"]}</td>'
+                f'<td><span class="buy-tag">{r["Direction"]}</span></td>'
+                f'<td class="tvf-text">{r["TVF"]}</td>'
+                f'<td>{r["Score"]}</td>'
+                f'<td><span class="{tcs_class}">{r["TCS"]}%</span></td>'
+                f'<td>₹{r["CMP"]}</td>'
+                f'<td>₹{r["VWAP"]}</td>'
+                f'<td>{r["OBI"]}%</td>'
+                f'<td>{r["COBI"]}%</td>'
+                f'<td>{r["PMS"]}</td>'
+                f'<td>{r["rOVL"]}x</td>'
+                f'<td class="demand-text">+{r["Demand_Pct"]}%</td>'
+                f'<td class="supply-text">-{r["Supply_Pct"]}%</td>'
+                f'<td>{mtf_dots}</td>'
+                f'<td>{r["RSI"]}</td>'
+                f'<td>{r["ADX"]}</td>'
+                f'</tr>'
+            )
+            rows_list.append(row)
 
-        html_code = f"""
-        <div class="terminal-container">
-            <div class="terminal-header">
-                <div>
-                    <div class="terminal-title">INSTITUTIONAL QUANT TERMINAL V2 (OPTIMIZED)</div>
-                    <div class="terminal-sub">RANGE: RS 300 TO RS 600 | TCS SYSTEM ACTIVE</div>
-                </div>
-                <div class="regime-box">
-                    <span class="badge-neutral">REGIME: {market['regime']}</span>
-                    <span class="adx-val">ADX: {market['adx']:.1f}</span>
-                </div>
-            </div>
-            <table class="quant-table">
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>TVF</th>
-                        <th>Score</th>
-                        <th>TCS %</th>
-                        <th>CMP</th>
-                        <th>VWAP</th>
-                        <th>OBI</th>
-                        <th>COBI</th>
-                        <th>PMS</th>
-                        <th>rOVL</th>
-                        <th>Demand %</th>
-                        <th>Supply %</th>
-                        <th>MTF EMA13<br><span style="font-size:9px; color:#64748b;">(1m, 3m, 5m, 15m)</span></th>
-                        <th>RSI</th>
-                        <th>ADX</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
-            </table>
-        </div>
-        """
+        all_rows_html = "".join(rows_list)
+
+        full_html = (
+            f'<div class="terminal-container">'
+            f'<div class="terminal-header">'
+            f'<div>'
+            f'<div class="terminal-title">INSTITUTIONAL QUANT TERMINAL V2 (OPTIMIZED)</div>'
+            f'<div class="terminal-sub">RANGE: RS 300 TO RS 600 | TCS SYSTEM ACTIVE</div>'
+            f'</div>'
+            f'<div class="regime-box">'
+            f'<span class="badge-neutral">REGIME: {market["regime"]}</span>'
+            f'<span class="adx-val">ADX: {market["adx"]:.1f}</span>'
+            f'</div>'
+            f'</div>'
+            f'<table class="quant-table">'
+            f'<thead>'
+            f'<tr>'
+            f'<th>Symbol</th>'
+            f'<th>Side</th>'
+            f'<th>TVF</th>'
+            f'<th>Score</th>'
+            f'<th>TCS %</th>'
+            f'<th>CMP</th>'
+            f'<th>VWAP</th>'
+            f'<th>OBI</th>'
+            f'<th>COBI</th>'
+            f'<th>PMS</th>'
+            f'<th>rOVL</th>'
+            f'<th>Demand %</th>'
+            f'<th>Supply %</th>'
+            f'<th>MTF EMA13<br><span style="font-size:9px; color:#64748b;">(1m, 3m, 5m, 15m)</span></th>'
+            f'<th>RSI</th>'
+            f'<th>ADX</th>'
+            f'</tr>'
+            f'</thead>'
+            f'<tbody>'
+            f'{all_rows_html}'
+            f'</tbody>'
+            f'</table>'
+            f'</div>'
+        )
         
-        st.markdown(html_code, unsafe_allow_html=True)
+        st.markdown(full_html, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
