@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 # -----------------------------------------------------------------------------
-# PAGE CONFIGURATION & FULL VIEWPORT FIX
+# PAGE CONFIGURATION & FIXES
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="SMC Live Quant Engine",
@@ -23,17 +23,27 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Lock entire Streamlit viewport to permanent dark container
 st.markdown("""
 <style>
+    html, body, [data-testid="stAppViewContainer"], .main {
+        background-color: #090c10 !important;
+        overflow: hidden !important;
+    }
     .block-container {
         padding: 0rem !important;
         margin: 0rem !important;
         max-width: 100% !important;
     }
-    header, footer, #MainMenu {visibility: hidden !important;}
+    header, footer, #MainMenu {
+        visibility: hidden !important;
+        display: none !important;
+    }
     iframe {
-        width: 100% !important;
+        width: 100vw !important;
+        height: 100vh !important;
         border: none !important;
+        background-color: #090c10 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -194,19 +204,18 @@ def init_universe_mtf(tickers):
     return universe
 
 # -----------------------------------------------------------------------------
-# 4. REAL-TIME DATA COMPUTATION WORKER
+# 4. INITIAL BATCH CALCULATION
 # -----------------------------------------------------------------------------
-def fetch_live_quant_data(universe):
-    tickers_list = list(universe.keys())
-    if not tickers_list:
-        return [], 0, 0
-    
+universe = init_universe_mtf(TICKERS)
+tickers_list = list(universe.keys())
+
+def compute_all_metrics(universe):
+    if not universe: return [], 0
     t0 = time.time()
     batch = yf.download(
-        tickers=tickers_list, period="1d", interval="1m",
+        tickers=list(universe.keys()), period="1d", interval="1m",
         group_by="ticker", threads=True, progress=False, auto_adjust=True
     )
-    
     high_conviction_rows = []
     
     for ticker, info in universe.items():
@@ -231,7 +240,7 @@ def fetch_live_quant_data(universe):
             vwap = float(np.sum(tp * vol) / cum_vol)
             rsi = fast_rsi(close, 14)
             
-            # 2. Accurate 1m, 3m, 5m, 15m EMAs (Fixed Sampling)
+            # 2. Accurate 1m, 3m, 5m, 15m EMAs
             ema1 = fast_ema(close[-15:], 13)
             ema3 = fast_ema(close[-45::3], 13) if len(close) >= 40 else ema1
             ema5 = fast_ema(close[-75::5], 13) if len(close) >= 65 else ema1
@@ -264,19 +273,17 @@ def fetch_live_quant_data(universe):
             directional_move = (ltp - open_p) if info['direction'] == 'DEMAND' else (open_p - ltp)
             pressure_pct = min(100.0, max(0.0, (directional_move / atr_val) * 100.0))
             
-            # 6. Advanced Target Engine (Structure & Opposing Zones)
+            # 6. Advanced Target Engine
             if info['direction'] == "SUPPLY":
                 border_c = "#ff3838"
                 bg_c = "rgba(255, 56, 56, 0.12)"
                 status_t = "SUPPLY ACCUMULATION"
-                # Next Opposing Demand Target or ATR Projected
                 opp_targets = [z['top'] for z in info['opposing_zones'] if z['top'] < ltp]
                 target_price = max(opp_targets) if opp_targets else (ltp - (atr_val * 1.618))
             else:
                 border_c = "#00e676"
                 bg_c = "rgba(0, 230, 118, 0.12)"
                 status_t = "DEMAND ABSORPTION"
-                # Next Opposing Supply Target or ATR Projected
                 opp_targets = [z['bot'] for z in info['opposing_zones'] if z['bot'] > ltp]
                 target_price = min(opp_targets) if opp_targets else (ltp + (atr_val * 1.618))
                 
@@ -293,7 +300,7 @@ def fetch_live_quant_data(universe):
             
             tcs = int(min(100.0, max(0.0, mtf_score + vwap_score + rsi_score + zone_confluence_score + pressure_component)))
             
-            # 8. High-Conviction Screen Filter
+            # 8. Filter Selection
             if tcs >= HIGH_CONVICTION_TCS_THRESHOLD:
                 def dot(b): return "<span style='color:#00e676;'>🟢</span>" if b else "<span style='color:#ff5252;'>🔴</span>"
                 emas_html = f"{dot(ltp > ema1)} {dot(ltp > ema3)} {dot(ltp > ema5)} {dot(ltp > ema15)}"
@@ -319,47 +326,62 @@ def fetch_live_quant_data(universe):
             
     high_conviction_rows.sort(key=lambda x: x['tcs'], reverse=True)
     elapsed_ms = int((time.time() - t0) * 1000)
-    return high_conviction_rows, elapsed_ms, len(tickers_list)
+    return high_conviction_rows, elapsed_ms
 
-# -----------------------------------------------------------------------------
-# 5. ZERO-BLINK CLIENT-SIDE STREAMING COMPONENT
-# -----------------------------------------------------------------------------
-universe = init_universe_mtf(TICKERS)
-rows, elapsed_ms, total_scanned = fetch_live_quant_data(universe)
-timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+init_rows, init_latency = compute_all_metrics(universe)
+init_timestamp = datetime.datetime.now().strftime('%H:%M:%S')
 
-payload = {
-    "rows": rows,
-    "timestamp": timestamp,
-    "latency_ms": elapsed_ms,
-    "total_scanned": total_scanned
+init_payload = {
+    "rows": init_rows,
+    "timestamp": init_timestamp,
+    "latency_ms": init_latency,
+    "total_scanned": len(tickers_list),
+    "universe_data": {
+        k: {
+            "symbol": v["symbol"],
+            "open": v["open"],
+            "atr": v["atr"],
+            "direction": v["direction"],
+            "zones": v["zones"],
+            "opposing_zones": v["opposing_zones"]
+        } for k, v in universe.items()
+    }
 }
-payload_json = json.dumps(payload)
 
-client_view_html = f"""
+json_payload_str = json.dumps(init_payload)
+
+# -----------------------------------------------------------------------------
+# 5. SOLID-FRAME ZERO FLICKER / ZERO BLANK JAVASCRIPT APP
+# -----------------------------------------------------------------------------
+zero_blink_html = f"""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
     * {{
         box-sizing: border-box;
         margin: 0;
         padding: 0;
     }}
-    body {{
-        background-color: #090c10;
+    html, body {{
+        background-color: #090c10 !important;
         color: #c9d1d9;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
-        padding: 6px;
-        overflow-x: hidden;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
     }}
     .dashboard-container {{
         background-color: #090c10;
         border: 1.5px solid #30363d;
         border-radius: 8px;
         padding: 10px;
+        margin: 6px;
+        height: calc(100vh - 14px);
+        display: flex;
+        flex-direction: column;
     }}
     .header-bar {{
         display: flex;
@@ -368,7 +390,7 @@ client_view_html = f"""
         align-items: center;
         border-bottom: 1px dashed #30363d;
         padding-bottom: 8px;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
         gap: 6px;
     }}
     .brand-title {{
@@ -386,19 +408,25 @@ client_view_html = f"""
         border: 1px dashed #30363d;
     }}
     .table-wrapper {{
+        flex: 1;
         width: 100%;
         overflow-x: auto;
+        overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+        border: 1px dashed #30363d;
+        border-radius: 6px;
+        background: #090c10;
     }}
     table {{
         width: 100%;
         border-collapse: collapse;
         font-size: 11px;
         text-align: center;
-        border: 1px dashed #30363d;
         white-space: nowrap;
     }}
-    th {{
+    thead th {{
+        position: sticky;
+        top: 0;
         background: #161b22;
         color: #8b949e;
         text-transform: uppercase;
@@ -406,6 +434,7 @@ client_view_html = f"""
         padding: 8px 6px;
         border-bottom: 1px dashed #30363d;
         border-right: 1px dashed #30363d;
+        z-index: 2;
     }}
     td {{
         padding: 8px 6px;
@@ -419,7 +448,7 @@ client_view_html = f"""
         <div class="header-bar">
             <div class="brand-title">⚡ FREE QUANT ENGINE | SMC LIVE PRESSURE DASHBOARD</div>
             <div class="stream-tag" id="status-tag">
-                LIVE STREAM: {timestamp} IST | Active: {len(rows)}/{total_scanned} | Latency: {elapsed_ms}ms
+                LIVE STREAM: {init_timestamp} IST | Active: {len(init_rows)}/{len(tickers_list)} | Latency: {init_latency}ms
             </div>
         </div>
         <div class="table-wrapper">
@@ -438,34 +467,28 @@ client_view_html = f"""
                         <th>Buyer/Seller (COBI)</th>
                     </tr>
                 </thead>
-                <tbody id="table-body">
-                </tbody>
+                <tbody id="table-body"></tbody>
             </table>
         </div>
     </div>
 
 <script>
-    const data = {payload_json};
+    const globalState = {json_payload_str};
     const tbody = document.getElementById('table-body');
     const statusTag = document.getElementById('status-tag');
 
-    function renderView(payload) {{
-        statusTag.innerText = `LIVE STREAM: ${{payload.timestamp}} IST | Active: ${{payload.rows.length}}/${{payload.total_scanned}} | Latency: ${{payload.latency_ms}}ms`;
+    // Smooth DOM Update without removing nodes or causing screen redraws
+    function updateDOMTable(rows, timestamp, scanned, latency) {{
+        statusTag.innerText = `LIVE STREAM: ${{timestamp}} IST | Active: ${{rows.length}}/${{scanned}} | Latency: ${{latency}}ms`;
         
-        if (!payload.rows || payload.rows.length === 0) {{
-            tbody.innerHTML = `
-                <tr>
-                    <td colspan="10" style="padding: 24px; color: #8b949e; text-align: center; font-style: italic;">
-                        ⏳ Scanning in background... No high-conviction pure-zone setups (₹300-₹600) right now.
-                    </td>
-                </tr>
-            `;
+        if (!rows || rows.length === 0) {{
+            tbody.innerHTML = `<tr><td colspan="10" style="padding: 24px; color: #8b949e; text-align: center; font-style: italic;">⏳ Scanning in background... No high-conviction pure-zone setups (₹300-₹600) right now.</td></tr>`;
             return;
         }}
 
-        let outHtml = "";
-        for (let r of payload.rows) {{
-            outHtml += `
+        let out = "";
+        for (let r of rows) {{
+            out += `
                 <tr style="border-bottom: 1px dashed #30363d;">
                     <td style="font-weight: 900; text-align: left; color: #ffffff; padding: 10px 8px; border-right: 1px dashed #21262d;">${{r.symbol}}</td>
                     <td style="text-align: left; font-size: 10px; border-right: 1px dashed #21262d;">${{r.zone_html}}</td>
@@ -480,17 +503,192 @@ client_view_html = f"""
                 </tr>
             `;
         }}
-        tbody.innerHTML = outHtml;
+        tbody.innerHTML = out;
     }}
 
-    renderView(data);
+    // Initial Static Paint
+    updateDOMTable(globalState.rows, globalState.timestamp, globalState.total_scanned, globalState.latency_ms);
+
+    // Fast RSI in JS
+    function fastRsi(close, period=14) {{
+        if (close.length < period + 2) return 50.0;
+        let diffs = [];
+        for (let i = 1; i < close.length; i++) diffs.push(close[i] - close[i-1]);
+        let gains = diffs.map(d => d > 0 ? d : 0);
+        let losses = diffs.map(d => d < 0 ? -d : 0);
+        let avgGain = gains.slice(0, period).reduce((a,b)=>a+b, 0) / period;
+        let avgLoss = losses.slice(0, period).reduce((a,b)=>a+b, 0) / period;
+        for (let i = period; i < diffs.length; i++) {{
+            avgGain = (avgGain * (period - 1) + gains[i]) / period;
+            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+        }}
+        if (avgLoss === 0) return 100.0;
+        let rs = avgGain / avgLoss;
+        return 100.0 - (100.0 / (1.0 + rs));
+    }}
+
+    // Fast EMA in JS
+    function fastEma(arr, span) {{
+        if (!arr || arr.length === 0) return 0.0;
+        if (arr.length < span) return arr[arr.length - 1];
+        let alpha = 2.0 / (span + 1.0);
+        let ema = arr[0];
+        for (let i = 1; i < arr.length; i++) {{
+            ema = alpha * arr[i] + (1.0 - alpha) * ema;
+        }}
+        return ema;
+    }}
+
+    // Live In-Place Data Refresher (Zero Page Reload)
+    async function liveCycle() {{
+        const tickers = Object.keys(globalState.universe_data);
+        if (tickers.length === 0) return;
+        const t0 = performance.now();
+        
+        try {{
+            // Yahoo Finance Query v8 direct endpoint (Fastest JSON response)
+            const promises = tickers.map(t => 
+                fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${{t}}?interval=1m&range=1d`)
+                    .then(res => res.json())
+                    .then(data => ({{ ticker: t, data: data }}))
+                    .catch(() => null)
+            );
+
+            const results = await Promise.all(promises);
+            let high_conviction_rows = [];
+
+            for (let item of results) {{
+                if (!item || !item.data || !item.data.chart || !item.data.chart.result) continue;
+                const meta = item.data.chart.result[0];
+                const info = globalState.universe_data[item.ticker];
+                const quote = meta.indicators.quote[0];
+                
+                const closeArr = quote.close.filter(x => x !== null && x !== undefined);
+                const highArr = quote.high.filter(x => x !== null && x !== undefined);
+                const lowArr = quote.low.filter(x => x !== null && x !== undefined);
+                const openArr = quote.open.filter(x => x !== null && x !== undefined);
+                const volArr = quote.volume.filter(x => x !== null && x !== undefined);
+
+                if (closeArr.length < 5) continue;
+
+                const ltp = closeArr[closeArr.length - 1];
+                const open_p = info.open;
+                const atr_val = info.atr;
+                const pnl_pct = ((ltp - open_p) / open_p) * 100.0;
+
+                // VWAP & RSI
+                let sumTpVol = 0, sumVol = 0;
+                for (let i = 0; i < closeArr.length; i++) {{
+                    let tp = (highArr[i] + lowArr[i] + closeArr[i]) / 3.0;
+                    let v = volArr[i] || 0;
+                    sumTpVol += tp * v;
+                    sumVol += v;
+                }}
+                const vwap = sumVol > 0 ? (sumTpVol / sumVol) : ltp;
+                const rsi = fastRsi(closeArr, 14);
+
+                // EMAs
+                const ema1 = fastEma(closeArr.slice(-15), 13);
+                const s3 = []; for (let i = closeArr.length - 1; i >= 0 && s3.length < 15; i -= 3) s3.unshift(closeArr[i]);
+                const s5 = []; for (let i = closeArr.length - 1; i >= 0 && s5.length < 15; i -= 5) s5.unshift(closeArr[i]);
+                const s15 = []; for (let i = closeArr.length - 1; i >= 0 && s15.length < 15; i -= 15) s15.unshift(closeArr[i]);
+
+                const ema3 = s3.length >= 13 ? fastEma(s3, 13) : ema1;
+                const ema5 = s5.length >= 13 ? fastEma(s5, 13) : ema1;
+                const ema15 = s15.length >= 13 ? fastEma(s15, 13) : ema1;
+
+                const e1 = ltp > ema1, e3 = ltp > ema3, e5 = ltp > ema5, e15 = ltp > ema15;
+                const bull_cnt = [e1, e3, e5, e15].filter(Boolean).length;
+                const bear_cnt = 4 - bull_cnt;
+
+                // Zones
+                let matched_zones = [];
+                for (let z of info.zones) {{
+                    if (z.type === 'SUPPLY') {{
+                        matched_zones.push(`<span style='color:#ff5252; font-weight:700;'>SUPPLY (${{z.tf}})</span>`);
+                    }} else {{
+                        matched_zones.push(`<span style='color:#00e676; font-weight:700;'>DEMAND (${{z.tf}})</span>`);
+                    }}
+                }}
+                const zone_html = matched_zones.join(" | ");
+
+                // COBI
+                let buyPower = 0, sellPower = 0;
+                for (let i = 0; i < closeArr.length; i++) {{
+                    let br = (highArr[i] - lowArr[i]) + 1e-6;
+                    let v = volArr[i] || 0;
+                    buyPower += v * ((closeArr[i] - lowArr[i]) / br);
+                    sellPower += v * ((highArr[i] - closeArr[i]) / br);
+                }}
+                let totPower = buyPower + sellPower + 1e-6;
+                let buy_pct = (buyPower / totPower) * 100.0;
+                let imbalance_pct = ((buyPower - sellPower) / totPower) * 100.0;
+                let cobi_html = `${{buy_pct.toFixed(0)}}% Buy (${{imbalance_pct >= 0 ? '+' : ''}}${{imbalance_pct.toFixed(1)}}%)`;
+
+                // Directional Institutional Pressure Index
+                let directional_move = info.direction === 'DEMAND' ? (ltp - open_p) : (open_p - ltp);
+                let pressure_pct = Math.min(100.0, Math.max(0.0, (directional_move / atr_val) * 100.0));
+
+                // Advanced Target Engine
+                let border_c, bg_c, status_t, target_price;
+                if (info.direction === 'SUPPLY') {{
+                    border_c = "#ff3838"; bg_c = "rgba(255, 56, 56, 0.12)"; status_t = "SUPPLY ACCUMULATION";
+                    let opp = info.opposing_zones.map(z => z.top).filter(x => x < ltp);
+                    target_price = opp.length > 0 ? Math.max(...opp) : (ltp - (atr_val * 1.618));
+                }} else {{
+                    border_c = "#00e676"; bg_c = "rgba(0, 230, 118, 0.12)"; status_t = "DEMAND ABSORPTION";
+                    let opp = info.opposing_zones.map(z => z.bot).filter(x => x > ltp);
+                    target_price = opp.length > 0 ? Math.min(...opp) : (ltp + (atr_val * 1.618));
+                }}
+
+                let retest_html = pressure_pct > 75.0 ? "<div style='color:#ffaa00; font-size:9px; font-weight:bold; margin-top:2px;'>⚠️ ZONE RE-TEST REJECTION</div>" : "";
+                let pressure_box_html = `<div style='border: 1px dashed ${{border_c}}; background-color: ${{bg_c}}; padding: 3px 5px; border-radius: 4px; text-align: center;'><div style='font-size: 9px; font-weight: 800; color: ${{border_c}};'>${{status_t}}</div><div style='font-size: 11px; font-weight: 900; color: #ffffff;'>${{pressure_pct.toFixed(1)}}%</div>${{retest_html}}</div>`;
+
+                // TCS
+                let mtf_score = (Math.max(bull_cnt, bear_cnt) / 4.0) * 25.0;
+                let vwap_score = ((info.direction === 'DEMAND' && ltp > vwap) || (info.direction === 'SUPPLY' && ltp < vwap)) ? 20.0 : 0.0;
+                let rsi_score = ((info.direction === 'DEMAND' && rsi >= 50 && rsi <= 70) || (info.direction === 'SUPPLY' && rsi >= 30 && rsi <= 50)) ? 15.0 : 5.0;
+                let zone_confluence_score = Math.min(20.0, matched_zones.length * 10.0);
+                let pressure_component = Math.min(20.0, pressure_pct * 0.2);
+
+                let tcs = Math.floor(Math.min(100.0, Math.max(0.0, mtf_score + vwap_score + rsi_score + zone_confluence_score + pressure_component)));
+
+                if (tcs >= 65) {{
+                    const dot = (b) => b ? "<span style='color:#00e676;'>🟢</span>" : "<span style='color:#ff5252;'>🔴</span>";
+                    high_conviction_rows.push({{
+                        symbol: info.symbol,
+                        zone_html: zone_html,
+                        open: `₹${{open_p.toFixed(2)}}`,
+                        ltp: `₹${{ltp.toFixed(2)}}`,
+                        pnl: `${{pnl_pct >= 0 ? '+' : ''}}${{pnl_pct.toFixed(2)}}%`,
+                        pnl_color: pnl_pct >= 0 ? '#00e676' : '#ff5252',
+                        emas_html: `${{dot(e1)}} ${{dot(e3)}} ${{dot(e5)}} ${{dot(e15)}}`,
+                        pressure_box: pressure_box_html,
+                        target: `₹${{target_price.toFixed(2)}}`,
+                        tcs: tcs,
+                        cobi_html: cobi_html,
+                        cobi_color: imbalance_pct >= 0 ? '#00e676' : '#ff5252'
+                    }});
+                }}
+            }}
+
+            high_conviction_rows.sort((a,b) => b.tcs - a.tcs);
+            const elapsed = Math.floor(performance.now() - t0);
+            const nowTime = new Date().toLocaleTimeString('en-GB');
+
+            if (high_conviction_rows.length > 0) {{
+                updateDOMTable(high_conviction_rows, nowTime, tickers.length, elapsed);
+            }}
+        }} catch(err) {{
+            console.error("Fetch background silent bypass:", err);
+        }}
+    }}
+
+    // In-Place Dynamic DOM Refresh Loop without Streamlit Screen Reload
+    setInterval(liveCycle, 2000);
 </script>
 </body>
 </html>
 """
 
-components.html(client_view_html, height=720, scrolling=True)
-
-# Smooth in-place background update trigger (zero-blink execution)
-time.sleep(2)
-st.rerun()
+components.html(zero_blink_html, height=800, scrolling=False)
