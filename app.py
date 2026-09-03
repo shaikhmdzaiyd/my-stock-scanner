@@ -2,51 +2,22 @@ import time
 import datetime
 import warnings
 import logging
-import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Suppress background logs and warnings
 warnings.filterwarnings('ignore')
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
-# -----------------------------------------------------------------------------
-# PAGE CONFIGURATION & FIXES
-# -----------------------------------------------------------------------------
+# Streamlit Page Setup for Mobile & Desktop Performance
 st.set_page_config(
-    page_title="SMC Live Quant Engine",
+    page_title="SMC Live Engine",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# Lock entire Streamlit viewport to permanent dark container
-st.markdown("""
-<style>
-    html, body, [data-testid="stAppViewContainer"], .main {
-        background-color: #090c10 !important;
-        overflow: hidden !important;
-    }
-    .block-container {
-        padding: 0rem !important;
-        margin: 0rem !important;
-        max-width: 100% !important;
-    }
-    header, footer, #MainMenu {
-        visibility: hidden !important;
-        display: none !important;
-    }
-    iframe {
-        width: 100vw !important;
-        height: 100vh !important;
-        border: none !important;
-        background-color: #090c10 !important;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 1. HARD CONFIGURATION & UNIVERSE
@@ -58,7 +29,8 @@ HIGH_CONVICTION_TCS_THRESHOLD = 65
 TICKERS = [
     "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BPCL.NS", 
     "NAVA.NS", "CONCOR.NS", "POONAWALLA.NS", "GMDCLTD.NS", "LICHSGFIN.NS", 
-    "JSWINFRA.NS", "REDINGTON.NS", "ASHOKLEY.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", 
+    "JSWINFRA.NS", "REDINGTON.NS", "PRECWIRE.NS", "HINDCOPPER.NS", "RELAXO.NS",
+    "ASHOKLEY.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", 
     "CROMPTON.NS", "NATIONALUM.NS", "RBLBANK.NS", "NUVOCO.NS", "COALINDIA.NS", 
     "VBL.NS", "SYNGENE.NS", "ELECON.NS", "JINDALSAW.NS", "TATAPOWER.NS", 
     "JSWENERGY.NS", "USHAMART.NS", "NTPC.NS", "ICICIPRULI.NS", "BATAINDIA.NS", 
@@ -98,6 +70,85 @@ def fast_rsi(close, period=14):
     if avg_loss == 0: return 100.0
     rs = avg_gain / avg_loss
     return float(100.0 - (100.0 / (1.0 + rs)))
+
+def compute_bidirectional_cri(df_1m, ltp, target_zone_price, atr_14, current_direction="SUPPLY", span_bars=5):
+    """
+    df_1m: Realtime 1-minute OHLCV
+    target_zone_price: Opposing HTF level (Demand top if currently in Short/Supply, Supply bot if in Long/Demand)
+    atr_14: Daily ATR
+    current_direction: 'SUPPLY' (तलाश बुलिश रिवर्सल की) या 'DEMAND' (तलाश बेयरिश रिवर्सल की)
+    """
+    if len(df_1m) < span_bars:
+        return 0.0, "HOLD", "NO_ACTION"
+    
+    sub = df_1m.iloc[-span_bars:]
+    c = sub['Close'].to_numpy(dtype=float)
+    h = sub['High'].to_numpy(dtype=float)
+    l = sub['Low'].to_numpy(dtype=float)
+    o = sub['Open'].to_numpy(dtype=float)
+    v = sub['Volume'].to_numpy(dtype=float)
+    bar_range = (h - l) + 1e-6
+    
+    # 1. Exponential Structural Proximity (Sp)
+    if current_direction == "SUPPLY":
+        dist = max(0.0, ltp - target_zone_price)
+    else:
+        dist = max(0.0, target_zone_price - ltp)
+    s_p = np.exp(-2.5 * (dist / (atr_14 + 1e-6)))
+    
+    # 2. Linearly Weighted Volume Absorption (Av)
+    weights = np.arange(1, span_bars + 1)
+    if current_direction == "SUPPLY":
+        power = (c - l) / bar_range
+    else:
+        power = (h - c) / bar_range
+    weighted_vol = v * weights
+    a_v = float(np.sum(power * weighted_vol) / (np.sum(weighted_vol) + 1e-6))
+    
+    # 3. Volume-Scaled Wick Sweep (Wr)
+    v_mean = np.mean(v) if len(v) > 0 else 1.0
+    vol_mult = np.sqrt(min(2.0, max(0.5, v[-1] / (v_mean + 1e-6))))
+    if current_direction == "SUPPLY":
+        raw_wick = max(0.0, min(o[-1], c[-1]) - l[-1]) / bar_range[-1]
+    else:
+        raw_wick = max(0.0, h[-1] - max(o[-1], c[-1])) / bar_range[-1]
+    w_r = min(1.0, float(raw_wick * vol_mult))
+    
+    # 4. Micro-Structure Dynamic Shift (Ms)
+    tot_v = np.sum(v) + 1e-6
+    micro_vwap = np.sum(((h + l + c) / 3.0) * v) / tot_v
+    alpha = 2.0 / (13.0 + 1.0)
+    ema1 = c[0]
+    for x in c[1:]: ema1 = alpha * x + (1.0 - alpha) * ema1
+    
+    norm_factor = 0.1 * atr_14 + 1e-6
+    if current_direction == "SUPPLY":
+        diff_ema = (ltp - ema1) / norm_factor
+        diff_vwap = (ltp - micro_vwap) / norm_factor
+    else:
+        diff_ema = (ema1 - ltp) / norm_factor
+        diff_vwap = (micro_vwap - ltp) / norm_factor
+        
+    sig_ema = 1.0 / (1.0 + np.exp(-np.clip(diff_ema, -10, 10)))
+    sig_vwap = 1.0 / (1.0 + np.exp(-np.clip(diff_vwap, -10, 10)))
+    m_s = float(0.5 * sig_ema + 0.5 * sig_vwap)
+    
+    # Composite Score
+    cri = float((0.35 * s_p + 0.25 * a_v + 0.25 * w_r + 0.15 * m_s) * 100.0)
+    cri = min(100.0, max(0.0, cri))
+    
+    # Action Logic
+    new_side = "BUY_CALL" if current_direction == "SUPPLY" else "SELL_PUT"
+    if cri >= 80.0:
+        status, action = "CRITICAL_REVERSAL", f"ENTER_{new_side}_NOW"
+    elif cri >= 65.0:
+        status, action = "EARLY_TRIGGER", f"READY_{new_side}"
+    elif cri >= 40.0:
+        status, action = "PULLBACK_TRAIL", "TIGHTEN_SL"
+    else:
+        status, action = "TREND_STABLE", f"HOLD_{'SHORT' if current_direction == 'SUPPLY' else 'LONG'}"
+        
+    return round(cri, 2), status, action
 
 def extract_true_smc_zones(df: pd.DataFrame, tf_name: str, pivot_len: int = 2):
     """
@@ -147,10 +198,10 @@ def extract_true_smc_zones(df: pd.DataFrame, tf_name: str, pivot_len: int = 2):
     return zones[-2:]
 
 # -----------------------------------------------------------------------------
-# 3. UNIVERSE INITIALIZATION & CONFLICT-FREE FILTERING
+# 3. UNIVERSE INITIALIZATION & CONFLICT-FREE FILTERING (CACHED FOR ZERO DELAY)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900, show_spinner=False)
-def init_universe_mtf(tickers):
+def init_universe_mtf_cached(tickers):
     hist_1d = yf.download(tickers=tickers, period="30d", interval="1d", group_by="ticker", threads=True, progress=False, auto_adjust=True)
     hist_1h = yf.download(tickers=tickers, period="10d", interval="60m", group_by="ticker", threads=True, progress=False, auto_adjust=True)
     hist_15m = yf.download(tickers=tickers, period="5d", interval="15m", group_by="ticker", threads=True, progress=False, auto_adjust=True)
@@ -204,491 +255,280 @@ def init_universe_mtf(tickers):
     return universe
 
 # -----------------------------------------------------------------------------
-# 4. INITIAL BATCH CALCULATION
+# 4. MOBILE-OPTIMIZED RESPONSIVE UI STYLING & VIEW BUILDER
 # -----------------------------------------------------------------------------
-universe = init_universe_mtf(TICKERS)
-tickers_list = list(universe.keys())
+def inject_custom_css():
+    st.markdown("""
+        <style>
+            .block-container { padding: 8px 10px 10px 10px !important; }
+            header { visibility: hidden; }
+            footer { visibility: hidden; }
+            .mobile-card {
+                background: #0d1117;
+                border: 1.5px dashed #30363d;
+                border-radius: 8px;
+                padding: 10px;
+                margin-bottom: 10px;
+            }
+            .mobile-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px dashed #30363d;
+                padding-bottom: 6px;
+                margin-bottom: 8px;
+            }
+            .stat-badge {
+                background: #161b22;
+                border: 1px dashed #30363d;
+                border-radius: 4px;
+                padding: 4px 6px;
+                text-align: center;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
-def compute_all_metrics(universe):
-    if not universe: return [], 0
-    t0 = time.time()
-    batch = yf.download(
-        tickers=list(universe.keys()), period="1d", interval="1m",
-        group_by="ticker", threads=True, progress=False, auto_adjust=True
-    )
-    high_conviction_rows = []
-    
-    for ticker, info in universe.items():
-        try:
-            df = batch[ticker].dropna() if isinstance(batch.columns, pd.MultiIndex) else batch.dropna()
-            if df.empty or len(df) < 5: continue
+def build_mobile_dashboard(rows, timestamp, latency_ms, total_scanned):
+    cards_html = ""
+    if not rows:
+        cards_html = """
+        <div style="padding: 24px; color: #8b949e; text-align: center; font-style: italic; background:#0d1117; border: 1.5px dashed #30363d; border-radius:8px;">
+            ⏳ Scanning in background... No high-conviction pure-zone setups (₹300-₹600) right now.
+        </div>
+        """
+    else:
+        for r in rows:
+            def dot(b): return "<span style='color:#00e676;'>🟢</span>" if b else "<span style='color:#ff5252;'>🔴</span>"
+            emas_html = f"{dot(r['e1'])} {dot(r['e3'])} {dot(r['e5'])} {dot(r['e15'])}"
             
-            close = df['Close'].to_numpy(dtype=float)
-            high = df['High'].to_numpy(dtype=float)
-            low = df['Low'].to_numpy(dtype=float)
-            open_arr = df['Open'].to_numpy(dtype=float)
-            vol = df['Volume'].to_numpy(dtype=float)
-            
-            ltp = float(close[-1])
-            open_p = info['open']
-            atr_val = info['atr']
-            pnl_pct = ((ltp - open_p) / open_p) * 100.0
-            
-            # 1. Background VWAP & Momentum RSI
-            tp = (high + low + close) / 3.0
-            cum_vol = np.sum(vol) + 1e-6
-            vwap = float(np.sum(tp * vol) / cum_vol)
-            rsi = fast_rsi(close, 14)
-            
-            # 2. Accurate 1m, 3m, 5m, 15m EMAs
-            ema1 = fast_ema(close[-15:], 13)
-            ema3 = fast_ema(close[-45::3], 13) if len(close) >= 40 else ema1
-            ema5 = fast_ema(close[-75::5], 13) if len(close) >= 65 else ema1
-            ema15 = fast_ema(close[-225::15], 13) if len(close) >= 150 else ema1
-            
-            bull_cnt = sum([ltp > ema1, ltp > ema3, ltp > ema5, ltp > ema15])
-            bear_cnt = 4 - bull_cnt
-            
-            # 3. Clean Zone Badges
-            matched_zones = []
-            for z in info['zones']:
-                if z['type'] == 'SUPPLY':
-                    matched_zones.append(f"<span style='color:#ff5252; font-weight:700;'>SUPPLY ({z['tf']})</span>")
-                else:
-                    matched_zones.append(f"<span style='color:#00e676; font-weight:700;'>DEMAND ({z['tf']})</span>")
-                        
-            zone_html = " | ".join(matched_zones)
-            
-            # 4. Intra-Bar Price-Volume Imbalance (Refined COBI)
-            bar_range = (high - low) + 1e-6
-            buy_power = np.sum(vol * ((close - low) / bar_range))
-            sell_power = np.sum(vol * ((high - close) / bar_range))
-            tot_power = buy_power + sell_power + 1e-6
-            
-            buy_pct = (buy_power / tot_power) * 100.0
-            imbalance_pct = ((buy_power - sell_power) / tot_power) * 100.0
-            cobi_html = f"{buy_pct:.0f}% Buy ({imbalance_pct:+.1f}%)"
-            
-            # 5. True Directional Institutional Pressure Index
-            directional_move = (ltp - open_p) if info['direction'] == 'DEMAND' else (open_p - ltp)
-            pressure_pct = min(100.0, max(0.0, (directional_move / atr_val) * 100.0))
-            
-            # 6. Advanced Target Engine
-            if info['direction'] == "SUPPLY":
-                border_c = "#ff3838"
-                bg_c = "rgba(255, 56, 56, 0.12)"
-                status_t = "SUPPLY ACCUMULATION"
-                opp_targets = [z['top'] for z in info['opposing_zones'] if z['top'] < ltp]
-                target_price = max(opp_targets) if opp_targets else (ltp - (atr_val * 1.618))
-            else:
-                border_c = "#00e676"
-                bg_c = "rgba(0, 230, 118, 0.12)"
-                status_t = "DEMAND ABSORPTION"
-                opp_targets = [z['bot'] for z in info['opposing_zones'] if z['bot'] > ltp]
-                target_price = min(opp_targets) if opp_targets else (ltp + (atr_val * 1.618))
+            cards_html += f"""
+            <div class="mobile-card">
+                <div class="mobile-header">
+                    <div>
+                        <span style="font-size: 16px; font-weight: 900; color: #ffffff;">{r['symbol']}</span>
+                        <div style="font-size: 10px; margin-top: 2px;">{r['zone_html']}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="font-size: 15px; font-weight: 800; color: #ffffff;">₹{r['ltp']:.2f}</span>
+                        <div style="font-size: 11px; font-weight: 800; color: {'#00e676' if r['pnl'] >= 0 else '#ff5252'};">{r['pnl']:+.2f}%</div>
+                    </div>
+                </div>
                 
-            retest_html = "<div style='color:#ffaa00; font-size:9px; font-weight:bold; margin-top:2px;'>⚠️ ZONE RE-TEST REJECTION</div>" if pressure_pct > 75.0 else ""
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
+                    <div>{r['pressure_box']}</div>
+                    <div>{r['cri_box']}</div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; font-size: 10px;">
+                    <div class="stat-badge">
+                        <div style="color: #8b949e; font-size: 8px;">OPEN</div>
+                        <div style="font-weight: 700; color: #fff;">₹{r['open']:.1f}</div>
+                    </div>
+                    <div class="stat-badge">
+                        <div style="color: #8b949e; font-size: 8px;">TARGET</div>
+                        <div style="font-weight: 800; color: #00e676;">₹{r['target']:.1f}</div>
+                    </div>
+                    <div class="stat-badge">
+                        <div style="color: #8b949e; font-size: 8px;">TCS SCORE</div>
+                        <div style="font-weight: 900; color: #00e676;">{r['tcs']}/100</div>
+                    </div>
+                    <div class="stat-badge">
+                        <div style="color: #8b949e; font-size: 8px;">EMAs</div>
+                        <div>{emas_html}</div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 6px; padding: 4px; background: #161b22; border-radius: 4px; text-align: center; font-size: 10px; font-weight: 700; color: {'#00e676' if r['imbalance'] >= 0 else '#ff5252'}; border: 1px dashed #30363d;">
+                    COBI: {r['cobi_html']}
+                </div>
+            </div>
+            """
             
-            pressure_box_html = f"""<div style='border: 1px dashed {border_c}; background-color: {bg_c}; padding: 3px 5px; border-radius: 4px; text-align: center;'><div style='font-size: 9px; font-weight: 800; color: {border_c};'>{status_t}</div><div style='font-size: 11px; font-weight: 900; color: #ffffff;'>{pressure_pct:.1f}%</div>{retest_html}</div>"""
-            
-            # 7. Weighted Institutional Conviction Score (TCS)
-            mtf_score = (max(bull_cnt, bear_cnt) / 4.0) * 25.0
-            vwap_score = 20.0 if ((info['direction'] == 'DEMAND' and ltp > vwap) or (info['direction'] == 'SUPPLY' and ltp < vwap)) else 0.0
-            rsi_score = 15.0 if ((info['direction'] == 'DEMAND' and 50 <= rsi <= 70) or (info['direction'] == 'SUPPLY' and 30 <= rsi <= 50)) else 5.0
-            zone_confluence_score = min(20.0, len(matched_zones) * 10.0)
-            pressure_component = min(20.0, pressure_pct * 0.2)
-            
-            tcs = int(min(100.0, max(0.0, mtf_score + vwap_score + rsi_score + zone_confluence_score + pressure_component)))
-            
-            # 8. Filter Selection
-            if tcs >= HIGH_CONVICTION_TCS_THRESHOLD:
-                def dot(b): return "<span style='color:#00e676;'>🟢</span>" if b else "<span style='color:#ff5252;'>🔴</span>"
-                emas_html = f"{dot(ltp > ema1)} {dot(ltp > ema3)} {dot(ltp > ema5)} {dot(ltp > ema15)}"
-                pnl_color = '#00e676' if pnl_pct >= 0 else '#ff5252'
-                cobi_color = '#00e676' if imbalance_pct >= 0 else '#ff5252'
-
-                high_conviction_rows.append({
-                    "symbol": info['symbol'],
-                    "zone_html": zone_html,
-                    "open": f"₹{open_p:.2f}",
-                    "ltp": f"₹{ltp:.2f}",
-                    "pnl": f"{pnl_pct:+.2f}%",
-                    "pnl_color": pnl_color,
-                    "emas_html": emas_html,
-                    "pressure_box": pressure_box_html,
-                    "target": f"₹{target_price:.2f}",
-                    "tcs": tcs,
-                    "cobi_html": cobi_html,
-                    "cobi_color": cobi_color
-                })
-        except Exception:
-            continue
-            
-    high_conviction_rows.sort(key=lambda x: x['tcs'], reverse=True)
-    elapsed_ms = int((time.time() - t0) * 1000)
-    return high_conviction_rows, elapsed_ms
-
-init_rows, init_latency = compute_all_metrics(universe)
-init_timestamp = datetime.datetime.now().strftime('%H:%M:%S')
-
-init_payload = {
-    "rows": init_rows,
-    "timestamp": init_timestamp,
-    "latency_ms": init_latency,
-    "total_scanned": len(tickers_list),
-    "universe_data": {
-        k: {
-            "symbol": v["symbol"],
-            "open": v["open"],
-            "atr": v["atr"],
-            "direction": v["direction"],
-            "zones": v["zones"],
-            "opposing_zones": v["opposing_zones"]
-        } for k, v in universe.items()
-    }
-}
-
-json_payload_str = json.dumps(init_payload)
-
-# -----------------------------------------------------------------------------
-# 5. SOLID-FRAME ZERO FLICKER / ZERO BLANK JAVASCRIPT APP
-# -----------------------------------------------------------------------------
-zero_blink_html = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<style>
-    * {{
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-    }}
-    html, body {{
-        background-color: #090c10 !important;
-        color: #c9d1d9;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-    }}
-    .dashboard-container {{
-        background-color: #090c10;
-        border: 1.5px solid #30363d;
-        border-radius: 8px;
-        padding: 10px;
-        margin: 6px;
-        height: calc(100vh - 14px);
-        display: flex;
-        flex-direction: column;
-    }}
-    .header-bar {{
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px dashed #30363d;
-        padding-bottom: 8px;
-        margin-bottom: 8px;
-        gap: 6px;
-    }}
-    .brand-title {{
-        color: #00e676;
-        font-size: 13px;
-        font-weight: 900;
-        letter-spacing: 0.5px;
-    }}
-    .stream-tag {{
-        color: #8b949e;
-        font-size: 11px;
-        background: #161b22;
-        padding: 4px 10px;
-        border-radius: 4px;
-        border: 1px dashed #30363d;
-    }}
-    .table-wrapper {{
-        flex: 1;
-        width: 100%;
-        overflow-x: auto;
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-        border: 1px dashed #30363d;
-        border-radius: 6px;
-        background: #090c10;
-    }}
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-        text-align: center;
-        white-space: nowrap;
-    }}
-    thead th {{
-        position: sticky;
-        top: 0;
-        background: #161b22;
-        color: #8b949e;
-        text-transform: uppercase;
-        font-size: 9.5px;
-        padding: 8px 6px;
-        border-bottom: 1px dashed #30363d;
-        border-right: 1px dashed #30363d;
-        z-index: 2;
-    }}
-    td {{
-        padding: 8px 6px;
-        border-bottom: 1px dashed #30363d;
-        border-right: 1px dashed #21262d;
-    }}
-</style>
-</head>
-<body>
-    <div class="dashboard-container">
-        <div class="header-bar">
-            <div class="brand-title">⚡ FREE QUANT ENGINE | SMC LIVE PRESSURE DASHBOARD</div>
-            <div class="stream-tag" id="status-tag">
-                LIVE STREAM: {init_timestamp} IST | Active: {len(init_rows)}/{len(tickers_list)} | Latency: {init_latency}ms
+    header_html = f"""
+    <div style="background-color: #090c10; border: 1.5px solid #30363d; border-radius: 8px; padding: 8px 10px; font-family: monospace; color: #c9d1d9; margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="color: #00e676; font-size: 11px; font-weight: 900;">⚡ SMC QUANT LIVE ENGINE</div>
+            <div style="color: #8b949e; font-size: 9.5px; background: #161b22; padding: 2px 6px; border-radius: 4px; border: 1px dashed #30363d;">
+                {timestamp} IST | Active: {len(rows)}/{total_scanned} | {latency_ms}ms
             </div>
         </div>
-        <div class="table-wrapper">
-            <table>
-                <thead>
-                    <tr>
-                        <th style="text-align: left;">Symbol</th>
-                        <th style="text-align: left;">Zone Alignments</th>
-                        <th>Open</th>
-                        <th>LTP</th>
-                        <th>Change</th>
-                        <th>EMAS (1m|3m|5m|15m)</th>
-                        <th style="min-width: 150px;">Supply/Demand Delta Box</th>
-                        <th>Target (₹)</th>
-                        <th>TCS Score</th>
-                        <th>Buyer/Seller (COBI)</th>
-                    </tr>
-                </thead>
-                <tbody id="table-body"></tbody>
-            </table>
-        </div>
     </div>
+    """
+    return header_html + cards_html
 
-<script>
-    const globalState = {json_payload_str};
-    const tbody = document.getElementById('table-body');
-    const statusTag = document.getElementById('status-tag');
+# -----------------------------------------------------------------------------
+# 5. REAL-TIME MULTI-FACTOR ENGINE EXECUTION
+# -----------------------------------------------------------------------------
+inject_custom_css()
+universe = init_universe_mtf_cached(TICKERS)
+tickers_list = list(universe.keys())
 
-    // Smooth DOM Update without removing nodes or causing screen redraws
-    function updateDOMTable(rows, timestamp, scanned, latency) {{
-        statusTag.innerText = `LIVE STREAM: ${{timestamp}} IST | Active: ${{rows.length}}/${{scanned}} | Latency: ${{latency}}ms`;
+if not tickers_list:
+    st.warning("⚠️ No stocks qualified in ₹300-₹600 range with clean SMC zones.")
+    st.stop()
+
+# Streamlit Single UI Container for 0-Lag Refreshing
+dashboard_placeholder = st.empty()
+
+while True:
+    try:
+        t0 = time.time()
+        batch = yf.download(
+            tickers=tickers_list, period="1d", interval="1m",
+            group_by="ticker", threads=True, progress=False, auto_adjust=True
+        )
         
-        if (!rows || rows.length === 0) {{
-            tbody.innerHTML = `<tr><td colspan="10" style="padding: 24px; color: #8b949e; text-align: center; font-style: italic;">⏳ Scanning in background... No high-conviction pure-zone setups (₹300-₹600) right now.</td></tr>`;
-            return;
-        }}
-
-        let out = "";
-        for (let r of rows) {{
-            out += `
-                <tr style="border-bottom: 1px dashed #30363d;">
-                    <td style="font-weight: 900; text-align: left; color: #ffffff; padding: 10px 8px; border-right: 1px dashed #21262d;">${{r.symbol}}</td>
-                    <td style="text-align: left; font-size: 10px; border-right: 1px dashed #21262d;">${{r.zone_html}}</td>
-                    <td style="border-right: 1px dashed #21262d;">${{r.open}}</td>
-                    <td style="font-weight: 700; border-right: 1px dashed #21262d;">${{r.ltp}}</td>
-                    <td style="color: ${{r.pnl_color}}; font-weight: 800; border-right: 1px dashed #21262d;">${{r.pnl}}</td>
-                    <td style="border-right: 1px dashed #21262d;">${{r.emas_html}}</td>
-                    <td style="padding: 6px; border-right: 1px dashed #21262d;">${{r.pressure_box}}</td>
-                    <td style="color: #00e676; font-weight: 800; border-right: 1px dashed #21262d;">${{r.target}}</td>
-                    <td style="border-right: 1px dashed #21262d;"><span style="color: #00e676; font-weight: 900; font-size: 12px;">${{r.tcs}}/100</span></td>
-                    <td style="color: ${{r.cobi_color}}; font-weight: 700;">${{r.cobi_html}}</td>
-                </tr>
-            `;
-        }}
-        tbody.innerHTML = out;
-    }}
-
-    // Initial Static Paint
-    updateDOMTable(globalState.rows, globalState.timestamp, globalState.total_scanned, globalState.latency_ms);
-
-    // Fast RSI in JS
-    function fastRsi(close, period=14) {{
-        if (close.length < period + 2) return 50.0;
-        let diffs = [];
-        for (let i = 1; i < close.length; i++) diffs.push(close[i] - close[i-1]);
-        let gains = diffs.map(d => d > 0 ? d : 0);
-        let losses = diffs.map(d => d < 0 ? -d : 0);
-        let avgGain = gains.slice(0, period).reduce((a,b)=>a+b, 0) / period;
-        let avgLoss = losses.slice(0, period).reduce((a,b)=>a+b, 0) / period;
-        for (let i = period; i < diffs.length; i++) {{
-            avgGain = (avgGain * (period - 1) + gains[i]) / period;
-            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-        }}
-        if (avgLoss === 0) return 100.0;
-        let rs = avgGain / avgLoss;
-        return 100.0 - (100.0 / (1.0 + rs));
-    }}
-
-    // Fast EMA in JS
-    function fastEma(arr, span) {{
-        if (!arr || arr.length === 0) return 0.0;
-        if (arr.length < span) return arr[arr.length - 1];
-        let alpha = 2.0 / (span + 1.0);
-        let ema = arr[0];
-        for (let i = 1; i < arr.length; i++) {{
-            ema = alpha * arr[i] + (1.0 - alpha) * ema;
-        }}
-        return ema;
-    }}
-
-    // Live In-Place Data Refresher (Zero Page Reload)
-    async function liveCycle() {{
-        const tickers = Object.keys(globalState.universe_data);
-        if (tickers.length === 0) return;
-        const t0 = performance.now();
+        high_conviction_rows = []
         
-        try {{
-            // Yahoo Finance Query v8 direct endpoint (Fastest JSON response)
-            const promises = tickers.map(t => 
-                fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${{t}}?interval=1m&range=1d`)
-                    .then(res => res.json())
-                    .then(data => ({{ ticker: t, data: data }}))
-                    .catch(() => null)
-            );
-
-            const results = await Promise.all(promises);
-            let high_conviction_rows = [];
-
-            for (let item of results) {{
-                if (!item || !item.data || !item.data.chart || !item.data.chart.result) continue;
-                const meta = item.data.chart.result[0];
-                const info = globalState.universe_data[item.ticker];
-                const quote = meta.indicators.quote[0];
+        for ticker, info in universe.items():
+            try:
+                df = batch[ticker].dropna() if isinstance(batch.columns, pd.MultiIndex) else batch.dropna()
+                if df.empty or len(df) < 5: continue
                 
-                const closeArr = quote.close.filter(x => x !== null && x !== undefined);
-                const highArr = quote.high.filter(x => x !== null && x !== undefined);
-                const lowArr = quote.low.filter(x => x !== null && x !== undefined);
-                const openArr = quote.open.filter(x => x !== null && x !== undefined);
-                const volArr = quote.volume.filter(x => x !== null && x !== undefined);
-
-                if (closeArr.length < 5) continue;
-
-                const ltp = closeArr[closeArr.length - 1];
-                const open_p = info.open;
-                const atr_val = info.atr;
-                const pnl_pct = ((ltp - open_p) / open_p) * 100.0;
-
-                // VWAP & RSI
-                let sumTpVol = 0, sumVol = 0;
-                for (let i = 0; i < closeArr.length; i++) {{
-                    let tp = (highArr[i] + lowArr[i] + closeArr[i]) / 3.0;
-                    let v = volArr[i] || 0;
-                    sumTpVol += tp * v;
-                    sumVol += v;
-                }}
-                const vwap = sumVol > 0 ? (sumTpVol / sumVol) : ltp;
-                const rsi = fastRsi(closeArr, 14);
-
-                // EMAs
-                const ema1 = fastEma(closeArr.slice(-15), 13);
-                const s3 = []; for (let i = closeArr.length - 1; i >= 0 && s3.length < 15; i -= 3) s3.unshift(closeArr[i]);
-                const s5 = []; for (let i = closeArr.length - 1; i >= 0 && s5.length < 15; i -= 5) s5.unshift(closeArr[i]);
-                const s15 = []; for (let i = closeArr.length - 1; i >= 0 && s15.length < 15; i -= 15) s15.unshift(closeArr[i]);
-
-                const ema3 = s3.length >= 13 ? fastEma(s3, 13) : ema1;
-                const ema5 = s5.length >= 13 ? fastEma(s5, 13) : ema1;
-                const ema15 = s15.length >= 13 ? fastEma(s15, 13) : ema1;
-
-                const e1 = ltp > ema1, e3 = ltp > ema3, e5 = ltp > ema5, e15 = ltp > ema15;
-                const bull_cnt = [e1, e3, e5, e15].filter(Boolean).length;
-                const bear_cnt = 4 - bull_cnt;
-
-                // Zones
-                let matched_zones = [];
-                for (let z of info.zones) {{
-                    if (z.type === 'SUPPLY') {{
-                        matched_zones.push(`<span style='color:#ff5252; font-weight:700;'>SUPPLY (${{z.tf}})</span>`);
-                    }} else {{
-                        matched_zones.push(`<span style='color:#00e676; font-weight:700;'>DEMAND (${{z.tf}})</span>`);
-                    }}
-                }}
-                const zone_html = matched_zones.join(" | ");
-
-                // COBI
-                let buyPower = 0, sellPower = 0;
-                for (let i = 0; i < closeArr.length; i++) {{
-                    let br = (highArr[i] - lowArr[i]) + 1e-6;
-                    let v = volArr[i] || 0;
-                    buyPower += v * ((closeArr[i] - lowArr[i]) / br);
-                    sellPower += v * ((highArr[i] - closeArr[i]) / br);
-                }}
-                let totPower = buyPower + sellPower + 1e-6;
-                let buy_pct = (buyPower / totPower) * 100.0;
-                let imbalance_pct = ((buyPower - sellPower) / totPower) * 100.0;
-                let cobi_html = `${{buy_pct.toFixed(0)}}% Buy (${{imbalance_pct >= 0 ? '+' : ''}}${{imbalance_pct.toFixed(1)}}%)`;
-
-                // Directional Institutional Pressure Index
-                let directional_move = info.direction === 'DEMAND' ? (ltp - open_p) : (open_p - ltp);
-                let pressure_pct = Math.min(100.0, Math.max(0.0, (directional_move / atr_val) * 100.0));
-
-                // Advanced Target Engine
-                let border_c, bg_c, status_t, target_price;
-                if (info.direction === 'SUPPLY') {{
-                    border_c = "#ff3838"; bg_c = "rgba(255, 56, 56, 0.12)"; status_t = "SUPPLY ACCUMULATION";
-                    let opp = info.opposing_zones.map(z => z.top).filter(x => x < ltp);
-                    target_price = opp.length > 0 ? Math.max(...opp) : (ltp - (atr_val * 1.618));
-                }} else {{
-                    border_c = "#00e676"; bg_c = "rgba(0, 230, 118, 0.12)"; status_t = "DEMAND ABSORPTION";
-                    let opp = info.opposing_zones.map(z => z.bot).filter(x => x > ltp);
-                    target_price = opp.length > 0 ? Math.min(...opp) : (ltp + (atr_val * 1.618));
-                }}
-
-                let retest_html = pressure_pct > 75.0 ? "<div style='color:#ffaa00; font-size:9px; font-weight:bold; margin-top:2px;'>⚠️ ZONE RE-TEST REJECTION</div>" : "";
-                let pressure_box_html = `<div style='border: 1px dashed ${{border_c}}; background-color: ${{bg_c}}; padding: 3px 5px; border-radius: 4px; text-align: center;'><div style='font-size: 9px; font-weight: 800; color: ${{border_c}};'>${{status_t}}</div><div style='font-size: 11px; font-weight: 900; color: #ffffff;'>${{pressure_pct.toFixed(1)}}%</div>${{retest_html}}</div>`;
-
-                // TCS
-                let mtf_score = (Math.max(bull_cnt, bear_cnt) / 4.0) * 25.0;
-                let vwap_score = ((info.direction === 'DEMAND' && ltp > vwap) || (info.direction === 'SUPPLY' && ltp < vwap)) ? 20.0 : 0.0;
-                let rsi_score = ((info.direction === 'DEMAND' && rsi >= 50 && rsi <= 70) || (info.direction === 'SUPPLY' && rsi >= 30 && rsi <= 50)) ? 15.0 : 5.0;
-                let zone_confluence_score = Math.min(20.0, matched_zones.length * 10.0);
-                let pressure_component = Math.min(20.0, pressure_pct * 0.2);
-
-                let tcs = Math.floor(Math.min(100.0, Math.max(0.0, mtf_score + vwap_score + rsi_score + zone_confluence_score + pressure_component)));
-
-                if (tcs >= 65) {{
-                    const dot = (b) => b ? "<span style='color:#00e676;'>🟢</span>" : "<span style='color:#ff5252;'>🔴</span>";
-                    high_conviction_rows.push({{
-                        symbol: info.symbol,
-                        zone_html: zone_html,
-                        open: `₹${{open_p.toFixed(2)}}`,
-                        ltp: `₹${{ltp.toFixed(2)}}`,
-                        pnl: `${{pnl_pct >= 0 ? '+' : ''}}${{pnl_pct.toFixed(2)}}%`,
-                        pnl_color: pnl_pct >= 0 ? '#00e676' : '#ff5252',
-                        emas_html: `${{dot(e1)}} ${{dot(e3)}} ${{dot(e5)}} ${{dot(e15)}}`,
-                        pressure_box: pressure_box_html,
-                        target: `₹${{target_price.toFixed(2)}}`,
-                        tcs: tcs,
-                        cobi_html: cobi_html,
-                        cobi_color: imbalance_pct >= 0 ? '#00e676' : '#ff5252'
-                    }});
-                }}
-            }}
-
-            high_conviction_rows.sort((a,b) => b.tcs - a.tcs);
-            const elapsed = Math.floor(performance.now() - t0);
-            const nowTime = new Date().toLocaleTimeString('en-GB');
-
-            if (high_conviction_rows.length > 0) {{
-                updateDOMTable(high_conviction_rows, nowTime, tickers.length, elapsed);
-            }}
-        }} catch(err) {{
-            console.error("Fetch background silent bypass:", err);
-        }}
-    }}
-
-    // In-Place Dynamic DOM Refresh Loop without Streamlit Screen Reload
-    setInterval(liveCycle, 2000);
-</script>
-</body>
-</html>
-"""
-
-components.html(zero_blink_html, height=800, scrolling=False)
+                close = df['Close'].to_numpy(dtype=float)
+                high = df['High'].to_numpy(dtype=float)
+                low = df['Low'].to_numpy(dtype=float)
+                open_arr = df['Open'].to_numpy(dtype=float)
+                vol = df['Volume'].to_numpy(dtype=float)
+                
+                ltp = float(close[-1])
+                open_p = info['open']
+                atr_val = info['atr']
+                pnl_pct = ((ltp - open_p) / open_p) * 100.0
+                
+                # 1. Background VWAP & Momentum RSI
+                tp = (high + low + close) / 3.0
+                cum_vol = np.sum(vol) + 1e-6
+                vwap = float(np.sum(tp * vol) / cum_vol)
+                rsi = fast_rsi(close, 14)
+                
+                # 2. Accurate 1m, 3m, 5m, 15m EMAs (Fixed Sampling)
+                ema1 = fast_ema(close[-15:], 13)
+                ema3 = fast_ema(close[-45::3], 13) if len(close) >= 40 else ema1
+                ema5 = fast_ema(close[-75::5], 13) if len(close) >= 65 else ema1
+                ema15 = fast_ema(close[-225::15], 13) if len(close) >= 150 else ema1
+                
+                bull_cnt = sum([ltp > ema1, ltp > ema3, ltp > ema5, ltp > ema15])
+                bear_cnt = 4 - bull_cnt
+                
+                # 3. Clean Zone Badges
+                matched_zones = []
+                for z in info['zones']:
+                    if z['type'] == 'SUPPLY':
+                        matched_zones.append(f"<span style='color:#ff5252; font-weight:700;'>SUPPLY ({z['tf']})</span>")
+                    else:
+                        matched_zones.append(f"<span style='color:#00e676; font-weight:700;'>DEMAND ({z['tf']})</span>")
+                            
+                zone_html = " | ".join(matched_zones)
+                
+                # 4. Intra-Bar Price-Volume Imbalance (Refined COBI)
+                bar_range = (high - low) + 1e-6
+                buy_power = np.sum(vol * ((close - low) / bar_range))
+                sell_power = np.sum(vol * ((high - close) / bar_range))
+                tot_power = buy_power + sell_power + 1e-6
+                
+                buy_pct = (buy_power / tot_power) * 100.0
+                imbalance_pct = ((buy_power - sell_power) / tot_power) * 100.0
+                cobi_html = f"{buy_pct:.0f}% Buy ({imbalance_pct:+.1f}%)"
+                
+                # 5. True Directional Institutional Pressure Index
+                directional_move = (ltp - open_p) if info['direction'] == 'DEMAND' else (open_p - ltp)
+                pressure_pct = min(100.0, max(0.0, (directional_move / atr_val) * 100.0))
+                
+                # 6. Advanced Target Engine (Structure & Opposing Zones)
+                if info['direction'] == "SUPPLY":
+                    border_c = "#ff3838"
+                    bg_c = "rgba(255, 56, 56, 0.12)"
+                    status_t = "SUPPLY ACCUMULATION"
+                    opp_targets = [z['top'] for z in info['opposing_zones'] if z['top'] < ltp]
+                    target_price = max(opp_targets) if opp_targets else (ltp - (atr_val * 1.618))
+                else:
+                    border_c = "#00e676"
+                    bg_c = "rgba(0, 230, 118, 0.12)"
+                    status_t = "DEMAND ABSORPTION"
+                    opp_targets = [z['bot'] for z in info['opposing_zones'] if z['bot'] > ltp]
+                    target_price = min(opp_targets) if opp_targets else (ltp + (atr_val * 1.618))
+                    
+                retest_html = "<div style='color:#ffaa00; font-size:9px; font-weight:bold; margin-top:2px;'>⚠️ ZONE RE-TEST REJECTION</div>" if pressure_pct > 75.0 else ""
+                
+                pressure_box_html = f"""
+                <div style='border: 1px dashed {border_c}; background-color: {bg_c}; padding: 4px 6px; border-radius: 4px; text-align: center;'>
+                    <div style='font-size: 8.5px; font-weight: 800; color: {border_c};'>{status_t}</div>
+                    <div style='font-size: 11px; font-weight: 900; color: #ffffff;'>{pressure_pct:.1f}%</div>
+                    {retest_html}
+                </div>
+                """
+                
+                # 7. Compute Bidirectional CRI (Reversal Engine)
+                cri_val, cri_status, cri_action = compute_bidirectional_cri(
+                    df, ltp, target_price, atr_val, current_direction=info['direction'], span_bars=5
+                )
+                
+                # Style CRI Box (Broken-line Box UI with Direct Trade Signals)
+                if cri_val >= 80.0:
+                    cri_border = "#00e676" if "BUY" in cri_action else "#ff3838"
+                    cri_bg = "rgba(0, 230, 118, 0.15)" if "BUY" in cri_action else "rgba(255, 56, 56, 0.15)"
+                    action_color = "#00e676" if "BUY" in cri_action else "#ff5252"
+                elif cri_val >= 65.0:
+                    cri_border = "#ffaa00"
+                    cri_bg = "rgba(255, 170, 0, 0.12)"
+                    action_color = "#ffaa00"
+                elif cri_val >= 40.0:
+                    cri_border = "#ffc107"
+                    cri_bg = "rgba(255, 193, 7, 0.08)"
+                    action_color = "#ffc107"
+                else:
+                    cri_border = "#30363d"
+                    cri_bg = "#161b22"
+                    action_color = "#8b949e"
+                    
+                cri_box_html = f"""
+                <div style='border: 1px dashed {cri_border}; background-color: {cri_bg}; padding: 4px 6px; border-radius: 4px; text-align: center;'>
+                    <div style='font-size: 8.5px; font-weight: 800; color: {action_color};'>{cri_status}</div>
+                    <div style='font-size: 11px; font-weight: 900; color: #ffffff;'>{cri_val:.1f}%</div>
+                    <div style='color: {action_color}; font-size: 8.5px; font-weight: 900; margin-top: 1px;'>⚡ {cri_action}</div>
+                </div>
+                """
+                
+                # 8. Weighted Institutional Conviction Score (TCS)
+                mtf_score = (max(bull_cnt, bear_cnt) / 4.0) * 25.0
+                vwap_score = 20.0 if ((info['direction'] == 'DEMAND' and ltp > vwap) or (info['direction'] == 'SUPPLY' and ltp < vwap)) else 0.0
+                rsi_score = 15.0 if ((info['direction'] == 'DEMAND' and 50 <= rsi <= 70) or (info['direction'] == 'SUPPLY' and 30 <= rsi <= 50)) else 5.0
+                zone_confluence_score = min(20.0, len(matched_zones) * 10.0)
+                pressure_component = min(20.0, pressure_pct * 0.2)
+                
+                tcs = int(min(100.0, max(0.0, mtf_score + vwap_score + rsi_score + zone_confluence_score + pressure_component)))
+                
+                # 9. High-Conviction Screen Filter
+                if tcs >= HIGH_CONVICTION_TCS_THRESHOLD:
+                    high_conviction_rows.append({
+                        "symbol": info['symbol'],
+                        "zone_html": zone_html,
+                        "open": open_p,
+                        "ltp": ltp,
+                        "pnl": pnl_pct,
+                        "pressure_box": pressure_box_html,
+                        "cri_box": cri_box_html,
+                        "target": target_price,
+                        "tcs": tcs,
+                        "cobi_html": cobi_html,
+                        "imbalance": imbalance_pct,
+                        "e1": ltp > ema1, "e3": ltp > ema3, "e5": ltp > ema5, "e15": ltp > ema15
+                    })
+            except Exception:
+                continue
+                
+        high_conviction_rows.sort(key=lambda x: x['tcs'], reverse=True)
+        elapsed_ms = int((time.time() - t0) * 1000)
+        now_time = datetime.datetime.now().strftime('%H:%M:%S')
+        
+        # Render instantly to UI container
+        dashboard_placeholder.markdown(
+            build_mobile_dashboard(high_conviction_rows, now_time, elapsed_ms, len(tickers_list)),
+            unsafe_allow_html=True
+        )
+        time.sleep(1)
+        
+    except Exception:
+        time.sleep(1)
+        continue
